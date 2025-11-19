@@ -23,7 +23,6 @@ class RelationType(Enum):
     MANY_TO_MANY = "many_to_many"
 
 
-# Mapping from draw.io arrow styles to cardinality
 CARDINALITY_MAP: dict[str, Cardinality] = {
     "ERone": Cardinality.ONE,
     "ERmandOne": Cardinality.ONE,
@@ -49,6 +48,7 @@ class Field:
     type: str
     constraints: str = ""
     is_fk: bool = False
+    is_unique: bool = False
 
 
 @dataclass
@@ -114,6 +114,28 @@ def clean_text(text: str | None) -> str:
     return text.strip()
 
 
+def is_bold_text(text: str | None, style: str | None) -> bool:
+    """Check if text is bold based on HTML tags or style attribute."""
+    if not text:
+        return False
+
+    # Check for HTML bold tags
+    if '<b>' in text or '<strong>' in text or '<B>' in text:
+        return True
+
+    # Check for fontStyle in style attribute
+    # fontStyle values: 1=bold, 2=italic, 4=underline (can be combined)
+    if style and 'fontStyle=' in style:
+        import re
+        match = re.search(r'fontStyle=(\d+)', style)
+        if match:
+            font_style = int(match.group(1))
+            # Check if bold bit is set (fontStyle & 1)
+            return (font_style & 1) == 1
+
+    return False
+
+
 def is_table_cell(cell_data: CellData) -> bool:
 
     if cell_data.vertex != "1":
@@ -137,14 +159,15 @@ def parse_field_line(line: str) -> Optional[Field]:
     )
 
 
-def process_row(cells: list[str], table: Table) -> None:
-
+def process_row(cells: list[tuple[str, str]], table: Table) -> None:
+    """Process a table row. cells is a list of (value, style) tuples."""
     if len(cells) < 2:
         return
 
-    pk_fk_marker = clean_text(cells[0])
-    column_text = clean_text(cells[1]) if len(cells) > 1 else ""
-    data_type_text = clean_text(cells[2]) if len(cells) > 2 else ""
+    pk_fk_marker = clean_text(cells[0][0])
+    column_text = clean_text(cells[1][0]) if len(cells) > 1 else ""
+    column_style = cells[1][1] if len(cells) > 1 else ""
+    data_type_text = clean_text(cells[2][0]) if len(cells) > 2 else ""
 
     if not column_text:
         return
@@ -166,6 +189,11 @@ def process_row(cells: list[str], table: Table) -> None:
                 ForeignKey(parsed_field.name, fk_match.group(1), fk_match.group(2))
             )
         parsed_field.is_fk = True
+
+    # Check if column name is bold (indicates UNIQUE)
+    if is_bold_text(cells[1][0], column_style):
+        parsed_field.is_unique = True
+        constraints_parts.append("UNIQUE")
 
     parsed_field.constraints = " ".join(constraints_parts)
     table.fields.append(parsed_field)
@@ -209,7 +237,7 @@ def parse_drawio_xml(xml_path: Path) -> dict[str, Table]:
                     row_data := cell_map.get(row_id)
                 ) and "shape=tableRow" in row_data.style:
                     row_cells = [
-                        cell_map[child_id].value
+                        (cell_map[child_id].value, cell_map[child_id].style)
                         for child_id in row_data.children
                         if child_id in cell_map
                     ]
@@ -530,14 +558,27 @@ def generate_create_table(table: Table) -> str:
         ",\n".join(column_defs),
     ]
 
+    # Handle PRIMARY KEY
     if table.pk_fields:
         pk_cols = ", ".join(table.pk_fields)
         parts.append(f",\n    PRIMARY KEY ({pk_cols})")
+    else:
+        # Auto-detect composite PK for tables without explicit PK
+        # Use first NOT NULL column as PK
+        potential_pk = [f.name for f in table.fields if "NOT NULL" in f.constraints and not f.is_fk]
+        if potential_pk:
+            parts.append(f",\n    PRIMARY KEY ({potential_pk[0]})")
 
+    # Add UNIQUE constraints
+    unique_fields = [f.name for f in table.fields if f.is_unique and f.name not in table.pk_fields]
+    for field_name in unique_fields:
+        parts.append(f",\n    UNIQUE ({field_name})")
+
+    # Add foreign keys with ON DELETE CASCADE
     for fk in table.fk_relations:
         parts.append(
             f",\n    FOREIGN KEY ({fk.field_name}) "
-            f"REFERENCES {fk.ref_table}({fk.ref_column})"
+            f"REFERENCES {fk.ref_table}({fk.ref_column}) ON DELETE CASCADE"
         )
 
     parts.append("\n);\n")
@@ -546,22 +587,12 @@ def generate_create_table(table: Table) -> str:
 
 
 def validate_schema(tables: dict[str, Table]) -> list[str]:
-    """Validate the schema for common issues.
-
-    Args:
-        tables: Dictionary of all tables.
-
-    Returns:
-        List of validation error messages.
-    """
     errors: list[str] = []
 
     for table_name, table in tables.items():
         field_map = table.get_field_map()
 
-        # Check each foreign key
         for fk in table.fk_relations:
-            # Check if FK field exists in child table
             if fk.field_name not in field_map:
                 errors.append(
                     f"Table '{table_name}': Foreign key field '{fk.field_name}' "
@@ -569,7 +600,6 @@ def validate_schema(tables: dict[str, Table]) -> list[str]:
                 )
                 continue
 
-            # Check if referenced table exists
             if fk.ref_table not in tables:
                 errors.append(
                     f"Table '{table_name}': Foreign key '{fk.field_name}' "
@@ -577,7 +607,6 @@ def validate_schema(tables: dict[str, Table]) -> list[str]:
                 )
                 continue
 
-            # Check if referenced column exists in parent table
             ref_table = tables[fk.ref_table]
             ref_field_map = ref_table.get_field_map()
 
@@ -589,13 +618,19 @@ def validate_schema(tables: dict[str, Table]) -> list[str]:
                 )
                 continue
 
-            # Check for type mismatch
             fk_field = field_map[fk.field_name]
             ref_field = ref_field_map[fk.ref_column]
 
-            # Normalize types for comparison (remove size specifiers)
-            fk_type = fk_field.type.split("(")[0].strip().upper() if fk_field.type else "VARCHAR"
-            ref_type = ref_field.type.split("(")[0].strip().upper() if ref_field.type else "VARCHAR"
+            fk_type = (
+                fk_field.type.split("(")[0].strip().upper()
+                if fk_field.type
+                else "VARCHAR"
+            )
+            ref_type = (
+                ref_field.type.split("(")[0].strip().upper()
+                if ref_field.type
+                else "VARCHAR"
+            )
 
             if fk_type != ref_type:
                 errors.append(
@@ -608,13 +643,34 @@ def validate_schema(tables: dict[str, Table]) -> list[str]:
 
 
 def generate_sql(tables: dict[str, Table]) -> str:
+    """Generate SQL CREATE statements with DROP, indexes, and constraints."""
     statements = [
         "-- Database schema generated from draw.io diagram",
-        "-- Generated automatically - review before executing\n",
+        "-- Generated automatically - review before executing",
+        "",
+        "-- Drop existing tables (in reverse dependency order)",
     ]
 
-    for table_name in topological_sort(tables):
+    # Add DROP TABLE statements in reverse order
+    sorted_tables = topological_sort(tables)
+    for table_name in reversed(sorted_tables):
+        statements.append(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
+
+    statements.append("")
+
+    # Generate CREATE TABLE statements
+    for table_name in sorted_tables:
         statements.append(generate_create_table(tables[table_name]))
+
+    # Generate indexes for foreign keys
+    statements.append("-- Indexes for foreign key columns")
+    for table_name in sorted_tables:
+        table = tables[table_name]
+        for fk in table.fk_relations:
+            index_name = f"idx_{table_name}_{fk.field_name}"
+            statements.append(
+                f"CREATE INDEX {index_name} ON {table_name}({fk.field_name});"
+            )
 
     return "\n".join(statements)
 
@@ -674,7 +730,9 @@ Examples:
             print(f"\nFound {len(validation_errors)} validation error(s):\n")
             for error in validation_errors:
                 print(f"  - {error}")
-            print("\nPlease fix these errors in your draw.io diagram before generating SQL.")
+            print(
+                "\nPlease fix these errors in your draw.io diagram before generating SQL."
+            )
             sys.exit(1)
 
         print("Schema validation passed")
