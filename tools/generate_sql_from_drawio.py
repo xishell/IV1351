@@ -261,7 +261,7 @@ def generate_create_table(table_name, table):
         field_type = field["type"] if field["type"] else "VARCHAR(255)"
         constraints = field["constraints"]
 
-        if "PRIMARY KEY" in constraints and len(table["pk_fields"]) > 1:
+        if "PRIMARY KEY" in constraints and table["pk_fields"]:
             constraints = constraints.replace("PRIMARY KEY", "").strip()
 
         col_def = f"    {field['name']} {field_type}"
