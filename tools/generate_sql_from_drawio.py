@@ -545,6 +545,68 @@ def generate_create_table(table: Table) -> str:
     return "\n".join(parts)
 
 
+def validate_schema(tables: dict[str, Table]) -> list[str]:
+    """Validate the schema for common issues.
+
+    Args:
+        tables: Dictionary of all tables.
+
+    Returns:
+        List of validation error messages.
+    """
+    errors: list[str] = []
+
+    for table_name, table in tables.items():
+        field_map = table.get_field_map()
+
+        # Check each foreign key
+        for fk in table.fk_relations:
+            # Check if FK field exists in child table
+            if fk.field_name not in field_map:
+                errors.append(
+                    f"Table '{table_name}': Foreign key field '{fk.field_name}' "
+                    f"not found in table"
+                )
+                continue
+
+            # Check if referenced table exists
+            if fk.ref_table not in tables:
+                errors.append(
+                    f"Table '{table_name}': Foreign key '{fk.field_name}' "
+                    f"references non-existent table '{fk.ref_table}'"
+                )
+                continue
+
+            # Check if referenced column exists in parent table
+            ref_table = tables[fk.ref_table]
+            ref_field_map = ref_table.get_field_map()
+
+            if fk.ref_column not in ref_field_map:
+                errors.append(
+                    f"Table '{table_name}': Foreign key '{fk.field_name}' "
+                    f"references non-existent column '{fk.ref_column}' "
+                    f"in table '{fk.ref_table}'"
+                )
+                continue
+
+            # Check for type mismatch
+            fk_field = field_map[fk.field_name]
+            ref_field = ref_field_map[fk.ref_column]
+
+            # Normalize types for comparison (remove size specifiers)
+            fk_type = fk_field.type.split("(")[0].strip().upper() if fk_field.type else "VARCHAR"
+            ref_type = ref_field.type.split("(")[0].strip().upper() if ref_field.type else "VARCHAR"
+
+            if fk_type != ref_type:
+                errors.append(
+                    f"Table '{table_name}': Type mismatch for foreign key '{fk.field_name}' "
+                    f"({fk_field.type or 'VARCHAR'}) -> "
+                    f"'{fk.ref_table}.{fk.ref_column}' ({ref_field.type or 'VARCHAR'})"
+                )
+
+    return errors
+
+
 def generate_sql(tables: dict[str, Table]) -> str:
     statements = [
         "-- Database schema generated from draw.io diagram",
@@ -603,6 +665,19 @@ Examples:
         print(f"Found {len(tables)} tables:")
         for table_name in tables:
             print(f"  - {table_name}")
+
+        # Validate schema
+        print("\nValidating schema...")
+        validation_errors = validate_schema(tables)
+
+        if validation_errors:
+            print(f"\nFound {len(validation_errors)} validation error(s):\n")
+            for error in validation_errors:
+                print(f"  - {error}")
+            print("\nPlease fix these errors in your draw.io diagram before generating SQL.")
+            sys.exit(1)
+
+        print("Schema validation passed")
 
         print("\nGenerating SQL...")
         sql = generate_sql(tables)
