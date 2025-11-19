@@ -1,109 +1,218 @@
+from __future__ import annotations
+
 import argparse
 import html
-import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Optional
 
-FIELD_REGEX = r"^(?P<name>\w+)\s*:\s*(?P<type>[\w()]+)\s*(?P<constraints>.*)"
+
+class Cardinality(Enum):
+    ONE = "one"
+    MANY = "many"
 
 
-def clean_text(text):
+class RelationType(Enum):
+    ONE_TO_ONE = "one_to_one"
+    ONE_TO_MANY = "one_to_many"
+    MANY_TO_ONE = "many_to_one"
+    MANY_TO_MANY = "many_to_many"
+
+
+# Mapping from draw.io arrow styles to cardinality
+CARDINALITY_MAP: dict[str, Cardinality] = {
+    "ERone": Cardinality.ONE,
+    "ERmandOne": Cardinality.ONE,
+    "ERzeroToOne": Cardinality.ONE,
+    "ERmany": Cardinality.MANY,
+    "ERoneToMany": Cardinality.MANY,
+    "ERzeroToMany": Cardinality.MANY,
+}
+
+FIELD_REGEX = re.compile(
+    r"^(?P<name>\w+)\s*:\s*(?P<type>[\w()]+)\s*(?P<constraints>.*)"
+)
+
+BR_TAG_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+DIV_TAG_PATTERN = re.compile(r"</?div>", re.IGNORECASE)
+WHITESPACE_PATTERN = re.compile(r"\s+")
+FK_PATTERN = re.compile(r"fk\s+(\w+)\s*\(\s*(\w+)\s*\)", re.IGNORECASE)
+
+
+@dataclass
+class Field:
+    name: str
+    type: str
+    constraints: str = ""
+    is_fk: bool = False
+
+
+@dataclass
+class ForeignKey:
+    field_name: str
+    ref_table: str
+    ref_column: str
+
+    def __hash__(self) -> int:
+        return hash((self.field_name, self.ref_table, self.ref_column))
+
+
+@dataclass
+class Table:
+    name: str
+    cell_id: Optional[str] = None
+    fields: list[Field] = field(default_factory=list)
+    pk_fields: list[str] = field(default_factory=list)
+    fk_relations: set[ForeignKey] = field(default_factory=set)
+
+    def get_field_map(self) -> dict[str, Field]:
+        return {fld.name: fld for fld in self.fields}
+
+    def has_fk(self, ref_table: str, ref_column: str) -> bool:
+        return any(
+            fk.ref_table == ref_table and fk.ref_column == ref_column
+            for fk in self.fk_relations
+        )
+
+
+@dataclass
+class CellData:
+
+    value: str
+    style: str
+    parent: str
+    vertex: str
+    edge: str
+    source: str
+    target: str
+    children: list[str] = field(default_factory=list)
+
+
+Multiplicity = tuple[int, int | str]
+
+ARROW_MULTIPLICITY_MAP: dict[str, Multiplicity] = {
+    "ERone": (1, 1),
+    "ERmandOne": (1, 1),
+    "ERzeroToOne": (0, 1),
+    "ERmany": (1, "N"),
+    "ERoneToMany": (1, "N"),
+    "ERzeroToMany": (0, "N"),
+}
+
+
+def clean_text(text: str | None) -> str:
     if not text:
         return ""
-    text = re.sub(r"<br\s*/?>", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"</?div>", " ", text, flags=re.IGNORECASE)
+    text = BR_TAG_PATTERN.sub(" ", text)
+    text = DIV_TAG_PATTERN.sub(" ", text)
     text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text)
+    text = WHITESPACE_PATTERN.sub(" ", text)
     return text.strip()
 
 
-def is_table_cell(cell):
-    vertex = cell.get("vertex", "")
-    style = cell.get("style", "")
+def is_table_cell(cell_data: CellData) -> bool:
 
-    if vertex != "1":
+    if cell_data.vertex != "1":
         return False
 
-    if "shape=table" in style:
-        return True
-    if "rounded=0" in style and "whiteSpace=wrap" in style:
-        return True
-
-    return False
+    style = cell_data.style
+    return "shape=table" in style or (
+        "rounded=0" in style and "whiteSpace=wrap" in style
+    )
 
 
-def parse_field_line(line):
-    match = re.match(FIELD_REGEX, line)
-    if not match:
+def parse_field_line(line: str) -> Optional[Field]:
+
+    if not (match := FIELD_REGEX.match(line)):
         return None
 
-    return {
-        "name": match.group("name"),
-        "type": match.group("type"),
-        "constraints": match.group("constraints").strip(),
-    }
+    return Field(
+        name=match.group("name"),
+        type=match.group("type"),
+        constraints=match.group("constraints").strip(),
+    )
 
 
-def parse_drawio_xml(xml_path):
+def process_row(cells: list[str], table: Table) -> None:
+
+    if len(cells) < 2:
+        return
+
+    pk_fk_marker = clean_text(cells[0])
+    column_text = clean_text(cells[1]) if len(cells) > 1 else ""
+    data_type_text = clean_text(cells[2]) if len(cells) > 2 else ""
+
+    if not column_text:
+        return
+
+    field_line = f"{column_text} : {data_type_text}"
+    parsed_field = parse_field_line(field_line) or Field(
+        name=column_text, type=data_type_text, constraints=""
+    )
+
+    constraints_parts = [parsed_field.constraints] if parsed_field.constraints else []
+
+    if "PK" in pk_fk_marker:
+        table.pk_fields.append(parsed_field.name)
+        constraints_parts.append("PRIMARY KEY")
+
+    if "FK" in pk_fk_marker:
+        if fk_match := FK_PATTERN.search(parsed_field.constraints):
+            table.fk_relations.add(
+                ForeignKey(parsed_field.name, fk_match.group(1), fk_match.group(2))
+            )
+        parsed_field.is_fk = True
+
+    parsed_field.constraints = " ".join(constraints_parts)
+    table.fields.append(parsed_field)
+
+
+def parse_drawio_xml(xml_path: Path) -> dict[str, Table]:
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    tables = {}
-    edges = []
-    cell_map = {}
+    tables: dict[str, Table] = {}
+    edges: list[CellData] = []
+    cell_map: dict[str, CellData] = {}
 
     for cell in root.iter("mxCell"):
         cell_id = cell.get("id", "")
-        parent_id = cell.get("parent", "")
-        value = cell.get("value", "")
-        style = cell.get("style", "")
-        vertex = cell.get("vertex", "")
-        edge = cell.get("edge", "")
-        source = cell.get("source", "")
-        target = cell.get("target", "")
+        cell_data = CellData(
+            value=cell.get("value", ""),
+            style=cell.get("style", ""),
+            parent=cell.get("parent", ""),
+            vertex=cell.get("vertex", ""),
+            edge=cell.get("edge", ""),
+            source=cell.get("source", ""),
+            target=cell.get("target", ""),
+        )
+        cell_map[cell_id] = cell_data
 
-        cell_map[cell_id] = {
-            "value": value,
-            "style": style,
-            "parent": parent_id,
-            "vertex": vertex,
-            "edge": edge,
-            "source": source,
-            "target": target,
-            "children": [],
-        }
+        if cell_data.parent in cell_map:
+            cell_map[cell_data.parent].children.append(cell_id)
 
     for cell_id, cell_data in cell_map.items():
-        parent_id = cell_data["parent"]
-        if parent_id in cell_map:
-            cell_map[parent_id]["children"].append(cell_id)
-
-    for cell_id, cell_data in cell_map.items():
-        if cell_data["edge"] == "1":
+        if cell_data.edge == "1":
             edges.append(cell_data)
-        elif is_table_cell(cell_map.get(cell_id, {})):
-            value = cell_data["value"]
-            table_name = clean_text(value)
-            if not table_name:
+        elif is_table_cell(cell_data):
+            if not (table_name := clean_text(cell_data.value)):
                 continue
 
-            table = {
-                "name": table_name,
-                "cell_id": cell_id,
-                "fields": [],
-                "pk_fields": [],
-                "fk_relations": [],
-            }
+            table = Table(name=table_name, cell_id=cell_id)
 
-            for row_id in cell_data["children"]:
-                row_data = cell_map.get(row_id, {})
-                if "shape=tableRow" in row_data.get("style", ""):
-                    row_cells = []
-                    for cell_id in row_data.get("children", []):
-                        cell_value = cell_map.get(cell_id, {}).get("value", "")
-                        row_cells.append(cell_value)
-
+            for row_id in cell_data.children:
+                if (
+                    row_data := cell_map.get(row_id)
+                ) and "shape=tableRow" in row_data.style:
+                    row_cells = [
+                        cell_map[child_id].value
+                        for child_id in row_data.children
+                        if child_id in cell_map
+                    ]
                     process_row(row_cells, table)
 
             tables[table_name] = table
@@ -113,180 +222,342 @@ def parse_drawio_xml(xml_path):
     return tables
 
 
-def process_row(cells, table):
-    if len(cells) < 2:
+def get_multiplicity_from_arrow(arrow_style: Optional[str]) -> Optional[Multiplicity]:
+    return ARROW_MULTIPLICITY_MAP.get(arrow_style.strip()) if arrow_style else None
+
+
+def extract_arrow_types(style_string: str) -> tuple[Optional[str], Optional[str]]:
+    if not style_string:
+        return None, None
+
+    style_dict = {}
+    for part in style_string.split(";"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            style_dict[key] = value
+
+    return style_dict.get("startArrow"), style_dict.get("endArrow")
+
+
+def parse_label_multiplicities(
+    label: str,
+) -> tuple[Optional[Multiplicity], Optional[Multiplicity]]:
+    if not label:
+        return None, None
+
+    text = label.replace(" ", "").upper()
+
+    multiplicity_patterns = {
+        "1:N": ((1, 1), (0, "N")),
+        "N:1": ((0, "N"), (1, 1)),
+        "1:1": ((1, 1), (1, 1)),
+    }
+
+    for pattern, result in multiplicity_patterns.items():
+        if pattern in text:
+            return result
+
+    if any(tok in text for tok in ("N:N", "M:M", "M:N", "N:M")):
+        return (0, "N"), (0, "N")
+
+    return None, None
+
+
+def classify_relationship(
+    start_mult: Optional[Multiplicity], end_mult: Optional[Multiplicity]
+) -> Optional[RelationType]:
+    if not start_mult or not end_mult:
+        return None
+
+    s_max, e_max = start_mult[1], end_mult[1]
+
+    if s_max == "N" and e_max == "N":
+        return RelationType.MANY_TO_MANY
+    if s_max == 1 and e_max == "N":
+        return RelationType.ONE_TO_MANY
+    if s_max == "N" and e_max == 1:
+        return RelationType.MANY_TO_ONE
+    if s_max == 1 and e_max == 1:
+        return RelationType.ONE_TO_ONE
+
+    return None
+
+
+def find_pk_and_type(tables: dict[str, Table], table_name: str) -> tuple[str, str]:
+    table = tables[table_name]
+    pk_name = table.pk_fields[0] if table.pk_fields else "id"
+
+    field_map = table.get_field_map()
+    pk_type = field_map.get(pk_name).type if pk_name in field_map else "INT"
+
+    return pk_name, pk_type or "INT"
+
+
+def ensure_fk(
+    tables: dict[str, Table],
+    child_table: str,
+    parent_table: str,
+    parent_pk: str,
+    optional: bool = False,
+) -> None:
+    child_table_data = tables[child_table]
+
+    if child_table_data.has_fk(parent_table, parent_pk):
         return
 
-    pk_fk_marker = clean_text(cells[0]) if cells else ""
-    column_text = clean_text(cells[1]) if len(cells) > 1 else ""
-    data_type_text = clean_text(cells[2]) if len(cells) > 2 else ""
+    field_map = child_table_data.get_field_map()
 
-    if not column_text:
-        return
+    candidate_names = [
+        parent_table,
+        f"{parent_table}_id",
+        f"{parent_table}_code",
+    ]
 
-    field_line = f"{column_text} : {data_type_text}"
-    field = parse_field_line(field_line)
+    fk_field_name = None
+    for name in candidate_names:
+        if name in field_map:
+            fk_field_name = name
+            break
 
-    if not field:
-        field = {
-            "name": column_text,
-            "type": data_type_text,
-            "constraints": "",
-        }
+    if not fk_field_name:
+        for field_name in field_map:
+            base = field_name.removesuffix("_id").removesuffix("_code")
+            if base == parent_table:
+                fk_field_name = field_name
+                break
 
-    constraints_parts = []
-    if field["constraints"]:
-        constraints_parts.append(field["constraints"])
-
-    if "PK" in pk_fk_marker:
-        table["pk_fields"].append(field["name"])
-        constraints_parts.append("PRIMARY KEY")
-
-    if "FK" in pk_fk_marker:
-        fk_match = re.search(
-            r"fk\s+(\w+)\s*\(\s*(\w+)\s*\)", field["constraints"], re.IGNORECASE
-        )
-        if fk_match:
-            ref_table = fk_match.group(1)
-            ref_column = fk_match.group(2)
-            table["fk_relations"].append((field["name"], ref_table, ref_column))
-
-    field["constraints"] = " ".join(constraints_parts)
-    table["fields"].append(field)
-
-
-def process_edges(edges, tables, cell_map):
-    cell_to_table = {}
-    for table_name, table_data in tables.items():
-        cell_to_table[table_data["cell_id"]] = table_name
-
-    for edge in edges:
-        source = edge["source"]
-        target = edge["target"]
-        label = clean_text(edge["value"])
-
-        if not source or not target:
-            continue
-
-        source_table = cell_to_table.get(source)
-        target_table = cell_to_table.get(target)
-
-        if not source_table or not target_table:
-            continue
-
-        if "1:N" in label or "1:n" in label:
-            parent_table = source_table
-            child_table = target_table
-        elif "N:1" in label or "n:1" in label:
-            parent_table = target_table
-            child_table = source_table
-        else:
-            continue
-
+    if not fk_field_name:
+        parent_pk_name, parent_pk_type = find_pk_and_type(tables, parent_table)
+        parent_pk = parent_pk_name
         fk_field_name = f"{parent_table}_id"
 
-        parent_pk = (
-            tables[parent_table]["pk_fields"][0]
-            if tables[parent_table]["pk_fields"]
-            else "id"
-        )
+        if fk_field_name not in field_map:
+            new_field = Field(
+                name=fk_field_name,
+                type=parent_pk_type,
+                constraints="" if optional else "NOT NULL",
+                is_fk=True,
+            )
+            child_table_data.fields.append(new_field)
+        else:
+            field_map[fk_field_name].is_fk = True
+    else:
+        existing_field = field_map[fk_field_name]
+        existing_field.is_fk = True
+        if not optional and "NOT NULL" not in existing_field.constraints:
+            existing_field.constraints = (
+                existing_field.constraints + " NOT NULL"
+            ).strip()
 
-        child_table_data = tables[child_table]
-        existing_field = next(
-            (f for f in child_table_data["fields"] if f["name"] == fk_field_name), None
-        )
+    child_table_data.fk_relations.add(
+        ForeignKey(fk_field_name, parent_table, parent_pk)
+    )
 
-        if not existing_field:
-            child_table_data["fields"].append(
-                {"name": fk_field_name, "type": "INT", "constraints": "NOT NULL"}
+
+def ensure_join_table(
+    tables: dict[str, Table], left_table: str, right_table: str
+) -> None:
+    a, b = sorted([left_table, right_table])
+    join_table_name = f"{a}_{b}_rel"
+
+    if join_table_name not in tables:
+        tables[join_table_name] = Table(name=join_table_name)
+
+    join_table = tables[join_table_name]
+    field_map = join_table.get_field_map()
+
+    for source_table in (left_table, right_table):
+        pk_name, pk_type = find_pk_and_type(tables, source_table)
+        fk_name = f"{source_table}_id"
+
+        if fk_name not in field_map:
+            join_table.fields.append(
+                Field(name=fk_name, type=pk_type, constraints="NOT NULL", is_fk=True)
             )
 
-        if (fk_field_name, parent_table, parent_pk) not in child_table_data[
-            "fk_relations"
-        ]:
-            child_table_data["fk_relations"].append(
-                (fk_field_name, parent_table, parent_pk)
+        join_table.fk_relations.add(ForeignKey(fk_name, source_table, pk_name))
+
+    if not join_table.pk_fields:
+        join_table.pk_fields = [f"{left_table}_id", f"{right_table}_id"]
+
+
+def find_parent_table(
+    cell_id: str, cell_map: dict[str, CellData], cell_to_table: dict[str, str]
+) -> Optional[str]:
+    current_id: Optional[str] = cell_id
+    visited: set[str] = set()
+
+    while current_id and current_id not in visited:
+        if current_id in cell_to_table:
+            return cell_to_table[current_id]
+
+        visited.add(current_id)
+        current_id = cell_map[current_id].parent if current_id in cell_map else None
+
+    return None
+
+
+def process_edges(
+    edges: list[CellData], tables: dict[str, Table], cell_map: dict[str, CellData]
+) -> None:
+    cell_to_table = {
+        table_data.cell_id: table_name
+        for table_name, table_data in tables.items()
+        if table_data.cell_id
+    }
+
+    for edge in edges:
+        if not edge.source or not edge.target:
+            continue
+
+        source_table = find_parent_table(edge.source, cell_map, cell_to_table)
+        target_table = find_parent_table(edge.target, cell_map, cell_to_table)
+
+        if not source_table or not target_table or source_table == target_table:
+            continue
+
+        label = clean_text(edge.value) if edge.value else ""
+        label_start_mult, label_end_mult = parse_label_multiplicities(label)
+
+        if label_start_mult and label_end_mult:
+            start_mult, end_mult = label_start_mult, label_end_mult
+        else:
+            start_arrow, end_arrow = extract_arrow_types(edge.style or "")
+            start_mult = get_multiplicity_from_arrow(start_arrow)
+            end_mult = get_multiplicity_from_arrow(end_arrow)
+
+        if not start_mult or not end_mult:
+            continue
+
+        rel_type = classify_relationship(start_mult, end_mult)
+        if not rel_type:
+            continue
+
+        if rel_type == RelationType.MANY_TO_MANY:
+            ensure_join_table(tables, source_table, target_table)
+            continue
+
+        start_optional = start_mult[0] == 0
+        end_optional = end_mult[0] == 0
+
+        if rel_type == RelationType.ONE_TO_MANY:
+            parent_table, child_table, child_optional = (
+                source_table,
+                target_table,
+                end_optional,
             )
+        elif rel_type == RelationType.MANY_TO_ONE:
+            parent_table, child_table, child_optional = (
+                target_table,
+                source_table,
+                start_optional,
+            )
+        else:
+            s_min, e_min = start_mult[0], end_mult[0]
+
+            if s_min == 0 and e_min == 1:
+                parent_table, child_table, child_optional = (
+                    target_table,
+                    source_table,
+                    True,
+                )
+            elif e_min == 0 and s_min == 1:
+                parent_table, child_table, child_optional = (
+                    source_table,
+                    target_table,
+                    True,
+                )
+            else:
+                if source_table < target_table:
+                    parent_table, child_table, child_optional = (
+                        source_table,
+                        target_table,
+                        end_optional,
+                    )
+                else:
+                    parent_table, child_table, child_optional = (
+                        target_table,
+                        source_table,
+                        start_optional,
+                    )
+
+        parent_pk, _ = find_pk_and_type(tables, parent_table)
+        ensure_fk(tables, child_table, parent_table, parent_pk, child_optional)
 
 
-def topological_sort(tables):
-    sorted_tables = []
-    visited = set()
-    temp_mark = set()
+def topological_sort(tables: dict[str, Table]) -> list[str]:
+    sorted_tables: list[str] = []
+    visited: set[str] = set()
+    temp_mark: set[str] = set()
 
-    def visit(table_name):
-        if table_name in visited:
-            return
-        if table_name in temp_mark:
+    def visit(table_name: str) -> None:
+        if table_name in visited or table_name in temp_mark:
             return
 
         temp_mark.add(table_name)
 
-        table = tables[table_name]
-        for _, ref_table, _ in table["fk_relations"]:
-            if ref_table in tables and ref_table != table_name:
-                visit(ref_table)
+        for fk in tables[table_name].fk_relations:
+            if fk.ref_table in tables and fk.ref_table != table_name:
+                visit(fk.ref_table)
 
-        temp_mark.remove(table_name)
+        temp_mark.discard(table_name)
         visited.add(table_name)
         sorted_tables.append(table_name)
 
-    for table_name in tables.keys():
+    for table_name in tables:
         visit(table_name)
 
     return sorted_tables
 
 
-def generate_sql(tables):
-    sql_statements = []
+def generate_create_table(table: Table) -> str:
+    column_defs = []
 
-    sql_statements.append("-- Database schema generated from draw.io diagram")
-    sql_statements.append("-- Generated automatically - review before executing\n")
+    for fld in table.fields:
+        field_type = fld.type or "VARCHAR(255)"
+        constraints = fld.constraints
 
-    sorted_table_names = topological_sort(tables)
-
-    for table_name in sorted_table_names:
-        table = tables[table_name]
-        sql = generate_create_table(table_name, table)
-        sql_statements.append(sql)
-
-    return "\n".join(sql_statements)
-
-
-def generate_create_table(table_name, table):
-    sql = [f"CREATE TABLE {table_name} ("]
-
-    column_definitions = []
-    for field in table["fields"]:
-        field_type = field["type"] if field["type"] else "VARCHAR(255)"
-        constraints = field["constraints"]
-
-        if "PRIMARY KEY" in constraints and table["pk_fields"]:
+        if table.pk_fields and "PRIMARY KEY" in constraints:
             constraints = constraints.replace("PRIMARY KEY", "").strip()
 
-        col_def = f"    {field['name']} {field_type}"
+        col_def = f"    {fld.name} {field_type}"
         if constraints:
             col_def += f" {constraints}"
-        column_definitions.append(col_def)
+        column_defs.append(col_def)
 
-    sql.append(",\n".join(column_definitions))
+    parts = [
+        f"CREATE TABLE {table.name} (",
+        ",\n".join(column_defs),
+    ]
 
-    if table["pk_fields"]:
-        pk_cols = ", ".join(table["pk_fields"])
-        sql.append(f",\n    PRIMARY KEY ({pk_cols})")
+    if table.pk_fields:
+        pk_cols = ", ".join(table.pk_fields)
+        parts.append(f",\n    PRIMARY KEY ({pk_cols})")
 
-    for fk_field, ref_table, ref_column in table["fk_relations"]:
-        fk_constraint = (
-            f"    FOREIGN KEY ({fk_field}) REFERENCES {ref_table}({ref_column})"
+    for fk in table.fk_relations:
+        parts.append(
+            f",\n    FOREIGN KEY ({fk.field_name}) "
+            f"REFERENCES {fk.ref_table}({fk.ref_column})"
         )
-        sql.append(f",\n{fk_constraint}")
 
-    sql.append("\n);\n")
+    parts.append("\n);\n")
 
-    return "\n".join(sql)
+    return "\n".join(parts)
 
 
-def main():
+def generate_sql(tables: dict[str, Table]) -> str:
+    statements = [
+        "-- Database schema generated from draw.io diagram",
+        "-- Generated automatically - review before executing\n",
+    ]
+
+    for table_name in topological_sort(tables):
+        statements.append(generate_create_table(tables[table_name]))
+
+    return "\n".join(statements)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate SQL CREATE statements from draw.io diagram XML",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -318,30 +589,27 @@ Examples:
 
     args = parser.parse_args()
 
-    xml_path = args.input_xml
-    output_path = args.output_sql
+    xml_path = Path(args.input_xml)
+    output_path = Path(args.output_sql)
 
     print(f"Parsing draw.io XML from: {xml_path}")
 
-    if not os.path.exists(xml_path):
+    if not xml_path.exists():
         print(f"Error: XML file not found at {xml_path}")
         sys.exit(1)
 
     try:
         tables = parse_drawio_xml(xml_path)
         print(f"Found {len(tables)} tables:")
-        for table_name in tables.keys():
+        for table_name in tables:
             print(f"  - {table_name}")
 
         print("\nGenerating SQL...")
         sql = generate_sql(tables)
 
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(output_path, "w") as f:
-            f.write(sql)
+        output_path.write_text(sql)
 
         print(f"\nSQL schema written to: {output_path}")
         print(f"Total SQL length: {len(sql)} characters")
