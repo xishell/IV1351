@@ -20,7 +20,7 @@ CREATE TABLE course_layout (
     course_name VARCHAR(50),
     min_students INT NOT NULL,
     max_students INT NOT NULL,
-    hp INT NOT NULL
+    hp DECIMAL(3,1) NOT NULL
 ,
     PRIMARY KEY (course_code, layout_version)
 
@@ -55,6 +55,8 @@ CREATE TABLE department (
     manager_id INT NOT NULL
 ,
     PRIMARY KEY (department_name)
+,
+    FOREIGN KEY (manager_id) REFERENCES employee(employee_id) ON DELETE RESTRICT
 
 );
 
@@ -88,12 +90,13 @@ CREATE TABLE employee (
 ,
     PRIMARY KEY (employee_id)
 ,
-    FOREIGN KEY (job_title) REFERENCES job_title(job_title) ON DELETE CASCADE
+    FOREIGN KEY (job_title) REFERENCES job_title(job_title) ON DELETE SET NULL
 ,
-    FOREIGN KEY (department_name) REFERENCES department(department_name) ON DELETE CASCADE
+    FOREIGN KEY (department_name) REFERENCES department(department_name) ON DELETE SET NULL
 ,
     FOREIGN KEY (personal_number) REFERENCES person(personal_number) ON DELETE CASCADE
-
+,
+    FOREIGN KEY (manager_id) REFERENCES employee(employee_id) ON DELETE SET NULL
 );
 
 CREATE TABLE teaching_activity (
