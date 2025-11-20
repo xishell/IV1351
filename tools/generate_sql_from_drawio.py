@@ -53,12 +53,27 @@ class Field:
 
 @dataclass
 class ForeignKey:
-    field_name: str
+    field_names: tuple[str, ...]  # Support composite FKs
     ref_table: str
-    ref_column: str
+    ref_columns: tuple[str, ...]  # Support composite FKs
 
     def __hash__(self) -> int:
-        return hash((self.field_name, self.ref_table, self.ref_column))
+        return hash((self.field_names, self.ref_table, self.ref_columns))
+
+    @property
+    def field_name(self) -> str:
+        """Backward compatibility: return first field name for single-column FKs."""
+        return self.field_names[0] if self.field_names else ""
+
+    @property
+    def ref_column(self) -> str:
+        """Backward compatibility: return first ref column for single-column FKs."""
+        return self.ref_columns[0] if self.ref_columns else ""
+
+    @property
+    def is_composite(self) -> bool:
+        """Check if this is a composite FK."""
+        return len(self.field_names) > 1
 
 
 @dataclass
@@ -72,11 +87,18 @@ class Table:
     def get_field_map(self) -> dict[str, Field]:
         return {fld.name: fld for fld in self.fields}
 
-    def has_fk(self, ref_table: str, ref_column: str) -> bool:
+    def has_fk(self, ref_table: str, ref_columns: tuple[str, ...] | str) -> bool:
+        """Check if FK to ref_table with specific columns exists."""
+        if isinstance(ref_columns, str):
+            ref_columns = (ref_columns,)
         return any(
-            fk.ref_table == ref_table and fk.ref_column == ref_column
+            fk.ref_table == ref_table and fk.ref_columns == ref_columns
             for fk in self.fk_relations
         )
+
+    def has_fk_to_table(self, ref_table: str) -> bool:
+        """Check if any FK to ref_table exists."""
+        return any(fk.ref_table == ref_table for fk in self.fk_relations)
 
 
 @dataclass
@@ -186,7 +208,7 @@ def process_row(cells: list[tuple[str, str]], table: Table) -> None:
     if "FK" in pk_fk_marker:
         if fk_match := FK_PATTERN.search(parsed_field.constraints):
             table.fk_relations.add(
-                ForeignKey(parsed_field.name, fk_match.group(1), fk_match.group(2))
+                ForeignKey((parsed_field.name,), fk_match.group(1), (fk_match.group(2),))
             )
         parsed_field.is_fk = True
 
@@ -325,15 +347,79 @@ def ensure_fk(
     tables: dict[str, Table],
     child_table: str,
     parent_table: str,
-    parent_pk: str,
+    parent_pks: tuple[str, ...] | str,
     optional: bool = False,
 ) -> None:
-    child_table_data = tables[child_table]
+    """Ensure FK exists from child to parent table.
 
-    if child_table_data.has_fk(parent_table, parent_pk):
+    Supports both single and composite foreign keys.
+    parent_pks can be a single column name (str) or tuple of column names.
+    """
+    if isinstance(parent_pks, str):
+        parent_pks = (parent_pks,)
+
+    child_table_data = tables[child_table]
+    parent_table_data = tables[parent_table]
+
+    # Check if FK already exists
+    if child_table_data.has_fk(parent_table, parent_pks):
         return
 
+    # For composite PKs, check if all the PK columns exist as FK fields in child table
+    if len(parent_pks) > 1:
+        field_map = child_table_data.get_field_map()
+        matching_fields = []
+
+        for pk_col in parent_pks:
+            # Look for field with same name or similar name
+            if pk_col in field_map and field_map[pk_col].is_fk:
+                matching_fields.append(pk_col)
+
+        # If we found all the composite PK columns in the child table, create composite FK
+        if len(matching_fields) == len(parent_pks):
+            # Mark all fields as used for this FK
+            for field_name in matching_fields:
+                if not optional and "NOT NULL" not in field_map[field_name].constraints:
+                    field_map[field_name].constraints = (
+                        field_map[field_name].constraints + " NOT NULL"
+                    ).strip()
+
+            child_table_data.fk_relations.add(
+                ForeignKey(tuple(matching_fields), parent_table, parent_pks)
+            )
+            return
+
+    # Single column FK handling
+    parent_pk = parent_pks[0]
     field_map = child_table_data.get_field_map()
+
+    # First check if any existing FK field in the child table could be referencing this parent
+    # This handles cases where FK fields are already defined in the diagram with non-standard names
+    for existing_field_name, existing_field in field_map.items():
+        if existing_field.is_fk:
+            # Check if this field already has an FK relation
+            already_used = any(
+                existing_field_name in fk.field_names
+                for fk in child_table_data.fk_relations
+            )
+
+            if not already_used:
+                # Check if the field name suggests it references this parent table
+                field_lower = existing_field_name.lower()
+                parent_lower = parent_table.lower()
+                pk_lower = parent_pk.lower()
+
+                # Match if field contains parent table name or parent PK name
+                if parent_lower in field_lower or pk_lower in field_lower:
+                    # Use this existing field as the FK
+                    if not optional and "NOT NULL" not in existing_field.constraints:
+                        existing_field.constraints = (
+                            existing_field.constraints + " NOT NULL"
+                        ).strip()
+                    child_table_data.fk_relations.add(
+                        ForeignKey((existing_field_name,), parent_table, (parent_pk,))
+                    )
+                    return
 
     candidate_names = [
         parent_table,
@@ -378,7 +464,7 @@ def ensure_fk(
             ).strip()
 
     child_table_data.fk_relations.add(
-        ForeignKey(fk_field_name, parent_table, parent_pk)
+        ForeignKey((fk_field_name,), parent_table, (parent_pk,))
     )
 
 
@@ -403,7 +489,7 @@ def ensure_join_table(
                 Field(name=fk_name, type=pk_type, constraints="NOT NULL", is_fk=True)
             )
 
-        join_table.fk_relations.add(ForeignKey(fk_name, source_table, pk_name))
+        join_table.fk_relations.add(ForeignKey((fk_name,), source_table, (pk_name,)))
 
     if not join_table.pk_fields:
         join_table.pk_fields = [f"{left_table}_id", f"{right_table}_id"]
@@ -509,36 +595,92 @@ def process_edges(
                         start_optional,
                     )
 
-        parent_pk, _ = find_pk_and_type(tables, parent_table)
-        ensure_fk(tables, child_table, parent_table, parent_pk, child_optional)
+        # Get all PK fields from parent table for composite FK support
+        parent_table_data = tables[parent_table]
+        parent_pks = tuple(parent_table_data.pk_fields) if parent_table_data.pk_fields else ("id",)
+        ensure_fk(tables, child_table, parent_table, parent_pks, child_optional)
 
 
-def topological_sort(tables: dict[str, Table]) -> list[str]:
+def detect_circular_dependencies(tables: dict[str, Table]) -> set[tuple[str, str]]:
+    """Detect circular FK dependencies and return set of (table, ref_table) pairs to defer."""
+    deferred_fks = set()
+
+    def creates_cycle(start_table: str, target_table: str, visited: set[str]) -> bool:
+        """Check if adding FK from start_table to target_table would create a cycle."""
+        if target_table == start_table:
+            return False  # Self-references are OK
+        if target_table in visited:
+            return True
+
+        visited = visited | {target_table}
+
+        # Check if target_table has path back to start_table
+        if target_table in tables:
+            for fk in tables[target_table].fk_relations:
+                if fk.ref_table == start_table:
+                    return True
+                if creates_cycle(start_table, fk.ref_table, visited):
+                    return True
+
+        return False
+
+    # Check each FK for cycles
+    for table_name, table in tables.items():
+        for fk in table.fk_relations:
+            if fk.ref_table == table_name:
+                continue  # Skip self-references
+
+            if creates_cycle(table_name, fk.ref_table, set()):
+                deferred_fks.add((table_name, fk.ref_table))
+
+    return deferred_fks
+
+
+def topological_sort(tables: dict[str, Table], deferred_fks: set[tuple[str, str]] = None) -> list[str]:
+    """Sort tables considering dependencies, optionally ignoring deferred FK relationships."""
+    if deferred_fks is None:
+        deferred_fks = set()
+
     sorted_tables: list[str] = []
     visited: set[str] = set()
     temp_mark: set[str] = set()
 
     def visit(table_name: str) -> None:
-        if table_name in visited or table_name in temp_mark:
+        if table_name in visited:
+            return
+        if table_name in temp_mark:
+            # Cycle detected - skip this edge
             return
 
         temp_mark.add(table_name)
 
         for fk in tables[table_name].fk_relations:
             if fk.ref_table in tables and fk.ref_table != table_name:
-                visit(fk.ref_table)
+                # Skip deferred FKs when determining sort order
+                if (table_name, fk.ref_table) not in deferred_fks:
+                    visit(fk.ref_table)
 
         temp_mark.discard(table_name)
         visited.add(table_name)
         sorted_tables.append(table_name)
 
     for table_name in tables:
-        visit(table_name)
+        if table_name not in visited:
+            visit(table_name)
 
     return sorted_tables
 
 
-def generate_create_table(table: Table) -> str:
+def generate_create_table(table: Table, deferred_fks: set[tuple[str, str]] = None) -> str:
+    """Generate CREATE TABLE statement, optionally deferring circular FK dependencies.
+
+    Args:
+        table: The table to generate SQL for
+        deferred_fks: Set of (table_name, ref_table) pairs for FKs to defer
+    """
+    if deferred_fks is None:
+        deferred_fks = set()
+
     column_defs = []
 
     for fld in table.fields:
@@ -574,11 +716,25 @@ def generate_create_table(table: Table) -> str:
     for field_name in unique_fields:
         parts.append(f",\n    UNIQUE ({field_name})")
 
-    # Add foreign keys with ON DELETE CASCADE
+    # Add foreign keys, skipping deferred ones
     for fk in table.fk_relations:
+        # Skip if this FK is deferred due to circular dependency
+        if (table.name, fk.ref_table) in deferred_fks:
+            continue
+
+        # Handle both single and composite FKs
+        fk_cols = ", ".join(fk.field_names)
+        ref_cols = ", ".join(fk.ref_columns)
+
+        # Determine ON DELETE action (use CASCADE for most, but check constraints)
+        on_delete = "CASCADE"
+        # For self-references and certain patterns, use SET NULL
+        if fk.ref_table == table.name:
+            on_delete = "SET NULL"
+
         parts.append(
-            f",\n    FOREIGN KEY ({fk.field_name}) "
-            f"REFERENCES {fk.ref_table}({fk.ref_column}) ON DELETE CASCADE"
+            f",\n    FOREIGN KEY ({fk_cols}) "
+            f"REFERENCES {fk.ref_table}({ref_cols}) ON DELETE {on_delete}"
         )
 
     parts.append("\n);\n")
@@ -593,51 +749,58 @@ def validate_schema(tables: dict[str, Table]) -> list[str]:
         field_map = table.get_field_map()
 
         for fk in table.fk_relations:
-            if fk.field_name not in field_map:
-                errors.append(
-                    f"Table '{table_name}': Foreign key field '{fk.field_name}' "
-                    f"not found in table"
+            # Handle composite FKs - validate each column
+            for i, fk_field_name in enumerate(fk.field_names):
+                ref_col = fk.ref_columns[i] if i < len(fk.ref_columns) else None
+
+                if fk_field_name not in field_map:
+                    errors.append(
+                        f"Table '{table_name}': Foreign key field '{fk_field_name}' "
+                        f"not found in table"
+                    )
+                    continue
+
+                if fk.ref_table not in tables:
+                    errors.append(
+                        f"Table '{table_name}': Foreign key '{fk_field_name}' "
+                        f"references non-existent table '{fk.ref_table}'"
+                    )
+                    continue
+
+                ref_table = tables[fk.ref_table]
+                ref_field_map = ref_table.get_field_map()
+
+                if ref_col and ref_col not in ref_field_map:
+                    errors.append(
+                        f"Table '{table_name}': Foreign key '{fk_field_name}' "
+                        f"references non-existent column '{ref_col}' "
+                        f"in table '{fk.ref_table}'"
+                    )
+                    continue
+
+                if not ref_col:
+                    continue
+
+                fk_field = field_map[fk_field_name]
+                ref_field = ref_field_map[ref_col]
+
+                fk_type = (
+                    fk_field.type.split("(")[0].strip().upper()
+                    if fk_field.type
+                    else "VARCHAR"
                 )
-                continue
-
-            if fk.ref_table not in tables:
-                errors.append(
-                    f"Table '{table_name}': Foreign key '{fk.field_name}' "
-                    f"references non-existent table '{fk.ref_table}'"
+                ref_type = (
+                    ref_field.type.split("(")[0].strip().upper()
+                    if ref_field.type
+                    else "VARCHAR"
                 )
-                continue
 
-            ref_table = tables[fk.ref_table]
-            ref_field_map = ref_table.get_field_map()
-
-            if fk.ref_column not in ref_field_map:
-                errors.append(
-                    f"Table '{table_name}': Foreign key '{fk.field_name}' "
-                    f"references non-existent column '{fk.ref_column}' "
-                    f"in table '{fk.ref_table}'"
-                )
-                continue
-
-            fk_field = field_map[fk.field_name]
-            ref_field = ref_field_map[fk.ref_column]
-
-            fk_type = (
-                fk_field.type.split("(")[0].strip().upper()
-                if fk_field.type
-                else "VARCHAR"
-            )
-            ref_type = (
-                ref_field.type.split("(")[0].strip().upper()
-                if ref_field.type
-                else "VARCHAR"
-            )
-
-            if fk_type != ref_type:
-                errors.append(
-                    f"Table '{table_name}': Type mismatch for foreign key '{fk.field_name}' "
-                    f"({fk_field.type or 'VARCHAR'}) -> "
-                    f"'{fk.ref_table}.{fk.ref_column}' ({ref_field.type or 'VARCHAR'})"
-                )
+                if fk_type != ref_type:
+                    errors.append(
+                        f"Table '{table_name}': Type mismatch for foreign key '{fk_field_name}' "
+                        f"({fk_field.type or 'VARCHAR'}) -> "
+                        f"'{fk.ref_table}.{ref_col}' ({ref_field.type or 'VARCHAR'})"
+                    )
 
     return errors
 
@@ -651,25 +814,55 @@ def generate_sql(tables: dict[str, Table]) -> str:
         "-- Drop existing tables (in reverse dependency order)",
     ]
 
-    # Add DROP TABLE statements in reverse order
-    sorted_tables = topological_sort(tables)
+    # Detect circular dependencies
+    deferred_fks = detect_circular_dependencies(tables)
+    if deferred_fks:
+        statements.append(f"-- Note: {len(deferred_fks)} circular FK dependencies detected and deferred")
+
+    # Sort tables, ignoring deferred FK edges
+    sorted_tables = topological_sort(tables, deferred_fks)
     for table_name in reversed(sorted_tables):
         statements.append(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
 
     statements.append("")
 
-    # Generate CREATE TABLE statements
+    # Generate CREATE TABLE statements (with deferred FKs excluded)
     for table_name in sorted_tables:
-        statements.append(generate_create_table(tables[table_name]))
+        statements.append(generate_create_table(tables[table_name], deferred_fks))
+
+    # Add deferred FK constraints using ALTER TABLE
+    if deferred_fks:
+        statements.append("-- Add deferred foreign key constraints to resolve circular dependencies")
+        for table_name, ref_table in sorted(deferred_fks):
+            table = tables[table_name]
+            # Find the FK(s) that reference ref_table
+            for fk in table.fk_relations:
+                if fk.ref_table == ref_table:
+                    fk_cols = ", ".join(fk.field_names)
+                    ref_cols = ", ".join(fk.ref_columns)
+                    constraint_name = f"fk_{table_name}_{ref_table}"
+
+                    # Determine ON DELETE action
+                    on_delete = "RESTRICT"  # Use RESTRICT for circular deps to prevent cascading deletes
+
+                    statements.append(
+                        f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} "
+                        f"FOREIGN KEY ({fk_cols}) REFERENCES {ref_table}({ref_cols}) "
+                        f"ON DELETE {on_delete};"
+                    )
+        statements.append("")
 
     # Generate indexes for foreign keys
     statements.append("-- Indexes for foreign key columns")
     for table_name in sorted_tables:
         table = tables[table_name]
         for fk in table.fk_relations:
-            index_name = f"idx_{table_name}_{fk.field_name}"
+            # Handle both single and composite FKs in index names and columns
+            fk_fields_joined = "_".join(fk.field_names)
+            fk_cols = ", ".join(fk.field_names)
+            index_name = f"idx_{table_name}_{fk_fields_joined}"
             statements.append(
-                f"CREATE INDEX {index_name} ON {table_name}({fk.field_name});"
+                f"CREATE INDEX {index_name} ON {table_name}({fk_cols});"
             )
 
     return "\n".join(statements)

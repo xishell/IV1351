@@ -2,6 +2,7 @@
 -- Generated automatically - review before executing
 
 -- Drop existing tables (in reverse dependency order)
+DROP TABLE IF EXISTS teacher_period_limit CASCADE;
 DROP TABLE IF EXISTS employee_course_instance CASCADE;
 DROP TABLE IF EXISTS planned_activity CASCADE;
 DROP TABLE IF EXISTS teaching_activity CASCADE;
@@ -14,13 +15,14 @@ DROP TABLE IF EXISTS study_period CASCADE;
 DROP TABLE IF EXISTS course_layout CASCADE;
 
 CREATE TABLE course_layout (
-    course_code VARCHAR(6) NOT NULL  UNIQUE,
+    course_code VARCHAR(6) NOT NULL,
+    layout_version INT NOT NULL,
     course_name VARCHAR(50),
     min_students INT NOT NULL,
     max_students INT NOT NULL,
     hp INT NOT NULL
 ,
-    PRIMARY KEY (course_code)
+    PRIMARY KEY (course_code, layout_version)
 
 );
 
@@ -35,22 +37,22 @@ CREATE TABLE study_period (
 CREATE TABLE course_instance (
     instance_id VARCHAR(9) NOT NULL  UNIQUE,
     course_code VARCHAR(6) NOT NULL,
+    layout_version INT NOT NULL,
     num_students INT NOT NULL,
     study_period VARCHAR(2) NOT NULL,
-    study_year INT NOT NULL,
-    course_layout_id VARCHAR(6)
+    study_year INT NOT NULL
 ,
     PRIMARY KEY (instance_id)
 ,
-    FOREIGN KEY (study_period) REFERENCES study_period(code) ON DELETE CASCADE
+    FOREIGN KEY (course_code, layout_version) REFERENCES course_layout(course_code, layout_version) ON DELETE CASCADE
 ,
-    FOREIGN KEY (course_layout_id) REFERENCES course_layout(course_code) ON DELETE CASCADE
+    FOREIGN KEY (study_period) REFERENCES study_period(code) ON DELETE CASCADE
 
 );
 
 CREATE TABLE department (
     department_name VARCHAR(50) NOT NULL  UNIQUE,
-    manager_id VARCHAR(12) NOT NULL
+    manager_id INT NOT NULL
 ,
     PRIMARY KEY (department_name)
 
@@ -82,17 +84,15 @@ CREATE TABLE employee (
     skill_set VARCHAR(500) NULL,
     salary INT NOT NULL,
     department_name VARCHAR(50),
-    manager VARCHAR(12) NOT NULL,
-    person_id VARCHAR(12),
-    department_id VARCHAR(50)
+    manager_id INT NULL
 ,
     PRIMARY KEY (employee_id)
 ,
     FOREIGN KEY (job_title) REFERENCES job_title(job_title) ON DELETE CASCADE
 ,
-    FOREIGN KEY (department_id) REFERENCES department(department_name) ON DELETE CASCADE
+    FOREIGN KEY (department_name) REFERENCES department(department_name) ON DELETE CASCADE
 ,
-    FOREIGN KEY (person_id) REFERENCES person(personal_number) ON DELETE CASCADE
+    FOREIGN KEY (personal_number) REFERENCES person(personal_number) ON DELETE CASCADE
 
 );
 
@@ -105,40 +105,48 @@ CREATE TABLE teaching_activity (
 );
 
 CREATE TABLE planned_activity (
-    instance_id INT NOT NULL,
+    instance_id VARCHAR(9) NOT NULL,
     activity_name VARCHAR (50) NOT NULL,
-    planned_hours INT NOT NULL,
-    teaching_activity_id VARCHAR(50),
-    course_instance_id VARCHAR(9)
+    planned_hours INT NOT NULL
 ,
-    PRIMARY KEY (instance_id)
+    PRIMARY KEY (instance_id, activity_name)
 ,
-    FOREIGN KEY (teaching_activity_id) REFERENCES teaching_activity(activity_name) ON DELETE CASCADE
+    FOREIGN KEY (instance_id) REFERENCES course_instance(instance_id) ON DELETE CASCADE
 ,
-    FOREIGN KEY (course_instance_id) REFERENCES course_instance(instance_id) ON DELETE CASCADE
+    FOREIGN KEY (activity_name) REFERENCES teaching_activity(activity_name) ON DELETE CASCADE
 
 );
 
 CREATE TABLE employee_course_instance (
-    instance_id INT NOT NULL,
-    employee_id INT NOT NULL,
-    course_instance_id VARCHAR(9)
+    instance_id VARCHAR(9) NOT NULL,
+    employee_id INT NOT NULL
 ,
     PRIMARY KEY (instance_id, employee_id)
 ,
-    FOREIGN KEY (employee_id) REFERENCES employee(employee_id) ON DELETE CASCADE
+    FOREIGN KEY (instance_id) REFERENCES course_instance(instance_id) ON DELETE CASCADE
 ,
-    FOREIGN KEY (course_instance_id) REFERENCES course_instance(instance_id) ON DELETE CASCADE
+    FOREIGN KEY (employee_id) REFERENCES employee(employee_id) ON DELETE CASCADE
+
+);
+
+CREATE TABLE teacher_period_limit (
+    period_code VARCHAR(2) NOT NULL,
+    max_courses INT NOT NULL
+,
+    PRIMARY KEY (period_code)
+,
+    FOREIGN KEY (period_code) REFERENCES study_period(code) ON DELETE CASCADE
 
 );
 
 -- Indexes for foreign key columns
+CREATE INDEX idx_course_instance_course_code_layout_version ON course_instance(course_code, layout_version);
 CREATE INDEX idx_course_instance_study_period ON course_instance(study_period);
-CREATE INDEX idx_course_instance_course_layout_id ON course_instance(course_layout_id);
 CREATE INDEX idx_employee_job_title ON employee(job_title);
-CREATE INDEX idx_employee_department_id ON employee(department_id);
-CREATE INDEX idx_employee_person_id ON employee(person_id);
-CREATE INDEX idx_planned_activity_teaching_activity_id ON planned_activity(teaching_activity_id);
-CREATE INDEX idx_planned_activity_course_instance_id ON planned_activity(course_instance_id);
+CREATE INDEX idx_employee_department_name ON employee(department_name);
+CREATE INDEX idx_employee_personal_number ON employee(personal_number);
+CREATE INDEX idx_planned_activity_instance_id ON planned_activity(instance_id);
+CREATE INDEX idx_planned_activity_activity_name ON planned_activity(activity_name);
+CREATE INDEX idx_employee_course_instance_instance_id ON employee_course_instance(instance_id);
 CREATE INDEX idx_employee_course_instance_employee_id ON employee_course_instance(employee_id);
-CREATE INDEX idx_employee_course_instance_course_instance_id ON employee_course_instance(course_instance_id);
+CREATE INDEX idx_teacher_period_limit_period_code ON teacher_period_limit(period_code);

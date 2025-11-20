@@ -68,6 +68,7 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
 
     # Clear existing data (in reverse dependency order)
     sql_statements.append("-- Clear existing data")
+    sql_statements.append("TRUNCATE TABLE teacher_period_limit CASCADE;")
     sql_statements.append("TRUNCATE TABLE employee_course_instance CASCADE;")
     sql_statements.append("TRUNCATE TABLE planned_activity CASCADE;")
     sql_statements.append("TRUNCATE TABLE course_instance CASCADE;")
@@ -80,7 +81,7 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
     sql_statements.append("TRUNCATE TABLE course_layout CASCADE;\n")
 
     # Track generated IDs for foreign key relationships
-    course_codes = []
+    course_layouts = []  # List of (course_code, layout_version) tuples
     study_periods = []
     job_titles = []
     personal_numbers = []
@@ -96,17 +97,18 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
     course_layout_rows = []
     for i in range(max(10, num_records // 5)):
         course_code = f"CS{fake.random_int(100, 999)}"
+        layout_version = 1  # Start with version 1 for each course
         course_name = fake.catch_phrase()[:50]
         min_students = random.randint(5, 15)
         max_students = random.randint(min_students + 10, 50)
         hp = random.choice([7.5, 15, 22.5, 30])
 
-        course_codes.append(course_code)
-        course_layout_rows.append([course_code, course_name, min_students, max_students, hp])
+        course_layouts.append((course_code, layout_version))
+        course_layout_rows.append([course_code, layout_version, course_name, min_students, max_students, hp])
 
     sql_statements.append(generate_multi_row_insert(
         'course_layout',
-        ['course_code', 'course_name', 'min_students', 'max_students', 'hp'],
+        ['course_code', 'layout_version', 'course_name', 'min_students', 'max_students', 'hp'],
         course_layout_rows
     ))
 
@@ -186,7 +188,7 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
         person_rows
     ))
 
-    # 5. Generate department (independent - we'll use placeholder manager_id)
+    # 5. Generate department (independent)
     sql_statements.append("")
     dept_list = [
         'Computer Science',
@@ -199,8 +201,8 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
     department_rows = []
     for dept in dept_list:
         department_names.append(dept)
-        # Use a placeholder manager_id that we'll reference later
-        manager_id = str(random.randint(1, num_records))
+        # manager_id field exists but has no FK constraint in current schema
+        manager_id = random.randint(1, num_records)
         department_rows.append([dept, manager_id])
 
     sql_statements.append(generate_multi_row_insert(
@@ -264,16 +266,22 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
         salary = random.randint(min_sal, max_sal)
 
         department_name = random.choice(department_names)
-        manager = job_title in ['Professor', 'Department Head']
+
+        # manager_id should be employee_id of a manager or NULL
+        # For simplicity, 30% chance of having a manager (references earlier employee)
+        if i > 0 and random.random() < 0.3:
+            manager_id = random.randint(1, i)  # Reference an existing employee
+        else:
+            manager_id = None
 
         employee_ids.append(employee_id)
         employee_rows.append([employee_id, personal_number, job_title, skill_set, salary,
-                             department_name, manager, personal_number, department_name])
+                             department_name, manager_id])
 
     sql_statements.append(generate_multi_row_insert(
         'employee',
         ['employee_id', 'personal_number', 'job_title', 'skill_set', 'salary',
-         'department_name', 'manager', 'person_id', 'department_id'],
+         'department_name', 'manager_id'],
         employee_rows
     ))
 
@@ -287,7 +295,7 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
         # Keep trying until we get a unique instance_id
         max_attempts = 100
         for attempt in range(max_attempts):
-            course_code = random.choice(course_codes)
+            course_code, layout_version = random.choice(course_layouts)
             study_period = random.choice(study_periods)
             study_year = random.randint(2020, 2025)
 
@@ -305,13 +313,13 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
         num_students = random.randint(10, 45)
 
         course_instances.append(instance_id)
-        course_instance_rows.append([instance_id, course_code, num_students, study_period,
-                                    study_year, course_code])
+        course_instance_rows.append([instance_id, course_code, layout_version, num_students,
+                                    study_period, study_year])
 
     sql_statements.append(generate_multi_row_insert(
         'course_instance',
-        ['instance_id', 'course_code', 'num_students', 'study_period',
-         'study_year', 'course_layout_id'],
+        ['instance_id', 'course_code', 'layout_version', 'num_students',
+         'study_period', 'study_year'],
         course_instance_rows
     ))
 
@@ -319,44 +327,54 @@ def generate_fake_data(num_records: int = 50, seed: int = 42) -> str:
     sql_statements.append("")
     # Count will be determined dynamically
     planned_activity_rows = []
-    instance_counter = 1
     for course_inst in course_instances:
-        # Generate 2-4 activities per course instance
+        # Generate 2-4 unique activities per course instance
         num_activities = random.randint(2, 4)
-        for _ in range(num_activities):
-            activity_name = random.choice(teaching_activities)
-            planned_hours = random.randint(10, 80)
+        selected_activities = random.sample(teaching_activities, min(num_activities, len(teaching_activities)))
 
-            planned_activity_rows.append([instance_counter, activity_name, planned_hours,
-                                         activity_name, course_inst])
-            instance_counter += 1
+        for activity_name in selected_activities:
+            planned_hours = random.randint(10, 80)
+            # Composite PK: (instance_id, activity_name)
+            planned_activity_rows.append([course_inst, activity_name, planned_hours])
 
     sql_statements.append(f"-- Planned activities ({len(planned_activity_rows)} rows)")
     sql_statements.append(generate_multi_row_insert(
         'planned_activity',
-        ['instance_id', 'activity_name', 'planned_hours',
-         'teaching_activity_id', 'course_instance_id'],
+        ['instance_id', 'activity_name', 'planned_hours'],
         planned_activity_rows
     ))
 
     # 10. Generate employee_course_instance (depends on employee, course_instance)
     sql_statements.append("")
     employee_course_rows = []
-    assignment_counter = 1
     for course_inst in course_instances:
         # Assign 1-3 employees to each course instance
         num_employees = random.randint(1, 3)
         assigned_employees = random.sample(employee_ids, min(num_employees, len(employee_ids)))
 
         for emp_id in assigned_employees:
-            employee_course_rows.append([assignment_counter, emp_id, course_inst])
-            assignment_counter += 1
+            # Composite PK: (instance_id, employee_id)
+            employee_course_rows.append([course_inst, emp_id])
 
     sql_statements.append(f"-- Employee-Course assignments ({len(employee_course_rows)} rows)")
     sql_statements.append(generate_multi_row_insert(
         'employee_course_instance',
-        ['instance_id', 'employee_id', 'course_instance_id'],
+        ['instance_id', 'employee_id'],
         employee_course_rows
+    ))
+
+    # 11. Generate teacher_period_limit (depends on study_period)
+    sql_statements.append("")
+    teacher_period_limit_rows = []
+    for period_code in study_periods:
+        max_courses = random.randint(2, 5)  # Each teacher can teach 2-5 courses per period
+        teacher_period_limit_rows.append([period_code, max_courses])
+
+    sql_statements.append(f"-- Teacher period limits ({len(teacher_period_limit_rows)} rows)")
+    sql_statements.append(generate_multi_row_insert(
+        'teacher_period_limit',
+        ['period_code', 'max_courses'],
+        teacher_period_limit_rows
     ))
 
     # Commit transaction
