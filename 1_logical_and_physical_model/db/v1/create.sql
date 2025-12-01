@@ -109,12 +109,15 @@ CREATE TABLE teaching_activity (
 
 CREATE TABLE planned_activity (
     instance_id VARCHAR(9) NOT NULL,
+    employee_id INT NOT NULL,
     activity_name VARCHAR (50) NOT NULL,
     planned_hours INT NOT NULL
 ,
-    PRIMARY KEY (instance_id, activity_name)
+    PRIMARY KEY (instance_id, employee_id, activity_name)
 ,
     FOREIGN KEY (instance_id) REFERENCES course_instance(instance_id) ON DELETE CASCADE
+,
+    FOREIGN KEY (employee_id) REFERENCES employee(employee_id) ON DELETE CASCADE
 ,
     FOREIGN KEY (activity_name) REFERENCES teaching_activity(activity_name) ON DELETE CASCADE
 
@@ -149,6 +152,7 @@ CREATE INDEX idx_employee_job_title ON employee(job_title);
 CREATE INDEX idx_employee_department_name ON employee(department_name);
 CREATE INDEX idx_employee_personal_number ON employee(personal_number);
 CREATE INDEX idx_planned_activity_instance_id ON planned_activity(instance_id);
+CREATE INDEX idx_planned_activity_employee_id ON planned_activity(employee_id);
 CREATE INDEX idx_planned_activity_activity_name ON planned_activity(activity_name);
 CREATE INDEX idx_employee_course_instance_instance_id ON employee_course_instance(instance_id);
 CREATE INDEX idx_employee_course_instance_employee_id ON employee_course_instance(employee_id);
