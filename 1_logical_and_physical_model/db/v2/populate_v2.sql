@@ -385,8 +385,8 @@ INSERT INTO employee_course_instance (instance_id, employee_id) VALUES
 ('CS990VT25', 8),
 ('CS990VT25', 9);
 
--- Planned activities (100+ rows - added activities for 2025 courses)
-INSERT INTO planned_activity (instance_id, employee_id, activity_name, planned_hours) VALUES
+-- Allocated activities (100+ rows - added activities for 2025 courses)
+INSERT INTO planned_activity (instance_id, employee_id, activity_name, allocated_hours) VALUES
 -- Historical courses (existing data)
 ('CS559P322', 26, 'Lecture', 20),
 ('CS559P322', 26, 'Lab', 15),

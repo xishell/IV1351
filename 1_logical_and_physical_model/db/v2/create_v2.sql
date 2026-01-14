@@ -202,12 +202,12 @@ CREATE TABLE teaching_activity (
     PRIMARY KEY (activity_name)
 );
 
--- Planned hours for each teacher's activities in each course
+-- Allocated hours for each teacher's activities in each course
 CREATE TABLE planned_activity (
     instance_id VARCHAR(9) NOT NULL,
     employee_id INT NOT NULL,
     activity_name VARCHAR(50) NOT NULL,
-    planned_hours INT NOT NULL CHECK (planned_hours >= 0),
+    allocated_hours INT NOT NULL CHECK (allocated_hours >= 0),
     PRIMARY KEY (instance_id, employee_id, activity_name),
     FOREIGN KEY (instance_id)
         REFERENCES course_instance(instance_id)
@@ -463,7 +463,7 @@ COMMENT ON TABLE course_layout IS 'Course definitions with versioning. Create ne
 COMMENT ON TABLE course_instance IS 'Specific offerings of courses in particular periods/years.';
 COMMENT ON TABLE salary_history IS 'Tracks salary changes over time for accurate historical cost calculations.';
 COMMENT ON TABLE teaching_activity IS 'Activity types (Lecture, Lab, etc.) with multiplication factors for workload calculation.';
-COMMENT ON TABLE planned_activity IS 'Hours allocated to each teacher for each activity in each course instance.';
+COMMENT ON TABLE planned_activity IS 'Allocated hours for each teacher for each activity in each course instance.';
 COMMENT ON TABLE teacher_period_limit IS 'Maximum courses per period (stored in DB per Task 1 requirement).';
-COMMENT ON COLUMN teaching_activity.factor IS 'Multiplication factor applied to planned hours (e.g., 2.4 for Labs, 3.6 for Lectures).';
+COMMENT ON COLUMN teaching_activity.factor IS 'Multiplication factor applied to allocated hours (e.g., 2.4 for Labs, 3.6 for Lectures).';
 COMMENT ON COLUMN salary_history.valid_to IS 'NULL indicates current/ongoing salary. Otherwise, last date this salary was valid.';

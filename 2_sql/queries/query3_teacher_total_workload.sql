@@ -19,14 +19,14 @@ SELECT
     cl.hp AS "HP",
     sp.code AS "Period",
     p.first_name || ' ' || p.last_name AS "Teacher's Name",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lecture'), 0) AS "Lecture Hours",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Tutorial'), 0) AS "Tutorial Hours",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lab'), 0) AS "Lab Hours",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Seminar'), 0) AS "Seminar Hours",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Project supervision'), 0) AS "Other Overhead Hours",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Course administration'), 0) AS "Admin",
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Exam grading'), 0) AS "Exam",
-    COALESCE(SUM(pa.planned_hours * ta.factor), 0) AS "Total"
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lecture'), 0) AS "Lecture Hours",
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Tutorial'), 0) AS "Tutorial Hours",
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lab'), 0) AS "Lab Hours",
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Seminar'), 0) AS "Seminar Hours",
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Project supervision'), 0) AS "Other Overhead Hours",
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Course administration'), 0) AS "Admin",
+    COALESCE(SUM(pa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Exam grading'), 0) AS "Exam",
+    COALESCE(SUM(pa.allocated_hours * ta.factor), 0) AS "Total"
 FROM course_instance ci
 JOIN course_layout cl ON ci.course_code = cl.course_code
     AND ci.layout_version = cl.layout_version
