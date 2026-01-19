@@ -44,14 +44,14 @@ SELECT
     p.first_name,
     p.last_name,
     e.job_title AS designation,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lecture'), 0) AS lecture_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Tutorial'), 0) AS tutorial_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lab'), 0) AS lab_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Seminar'), 0) AS seminar_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Project supervision'), 0) AS other_overhead_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Course administration'), 0) AS admin_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Exam grading'), 0) AS exam_hours,
-    COALESCE(SUM(pa.planned_hours * ta.factor), 0) AS total_hours
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lecture'), 0) AS lecture_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Tutorial'), 0) AS tutorial_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Lab'), 0) AS lab_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Seminar'), 0) AS seminar_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Project supervision'), 0) AS other_overhead_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Course administration'), 0) AS admin_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor) FILTER (WHERE ta.activity_name = 'Exam grading'), 0) AS exam_hours,
+    COALESCE(SUM(aa.allocated_hours * ta.factor), 0) AS total_hours
 FROM course_instance ci
 JOIN course_layout cl ON ci.course_code = cl.course_code
     AND ci.layout_version = cl.layout_version
@@ -59,9 +59,9 @@ JOIN study_period sp ON ci.study_period = sp.code
 JOIN employee_course_instance eci ON ci.instance_id = eci.instance_id
 JOIN employee e ON eci.employee_id = e.employee_id
 JOIN person p ON e.personal_number = p.personal_number
-LEFT JOIN planned_activity pa ON ci.instance_id = pa.instance_id
-    AND e.employee_id = pa.employee_id
-LEFT JOIN teaching_activity ta ON pa.activity_name = ta.activity_name
+LEFT JOIN actual_allocation aa ON ci.instance_id = aa.instance_id
+    AND e.employee_id = aa.employee_id
+LEFT JOIN teaching_activity ta ON aa.activity_name = ta.activity_name
 GROUP BY
     ci.study_year,
     sp.code,

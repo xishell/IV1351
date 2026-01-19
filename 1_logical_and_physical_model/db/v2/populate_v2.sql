@@ -385,8 +385,130 @@ INSERT INTO employee_course_instance (instance_id, employee_id) VALUES
 ('CS990VT25', 8),
 ('CS990VT25', 9);
 
--- Allocated activities (100+ rows - added activities for 2025 courses)
-INSERT INTO planned_activity (instance_id, employee_id, activity_name, allocated_hours) VALUES
+-- ========================================================================
+-- PLANNED ACTIVITIES (Total planned hours per course instance + activity)
+-- ========================================================================
+-- These represent the planning stage: how many hours of each activity are needed
+-- The values are slightly higher than actual allocations to show under-allocation
+
+INSERT INTO planned_activity (instance_id, activity_name, planned_hours) VALUES
+-- Historical courses (existing data)
+('CS559P322', 'Lecture', 25),
+('CS559P322', 'Lab', 20),
+('CS559P322', 'Tutorial', 15),
+('CS990HT21', 'Lecture', 25),
+('CS990HT21', 'Tutorial', 15),
+('CS990HT21', 'Lab', 20),
+('CS658H123', 'Lecture', 30),
+('CS818VT20', 'Lecture', 30),
+('CS818VT20', 'Lab', 25),
+('CS818VT20', 'Tutorial', 20),
+('CS658P222', 'Lecture', 30),
+('CS990P424', 'Lecture', 25),
+('CS990P424', 'Tutorial', 15),
+('CS754P225', 'Lecture', 30),
+('CS754P225', 'Lab', 20),
+('CS658P220', 'Lecture', 30),
+('CS381P422', 'Lecture', 25),
+('CS658P325', 'Lecture', 35),
+('CS658VT23', 'Lecture', 25),
+('CS658VT23', 'Lab', 20),
+('CS381P225', 'Lecture', 25),
+('CS381P225', 'Seminar', 15),
+('CS338HT23', 'Lecture', 35),
+('CS338HT23', 'Lab', 25),
+('CS754P220', 'Lecture', 30),
+('CS754P220', 'Lab', 20),
+('CS754P220', 'Tutorial', 15),
+('CS338P221', 'Lecture', 35),
+('CS338P221', 'Lab', 25),
+('CS338P221', 'Tutorial', 20),
+('CS658VT21', 'Lecture', 30),
+('CS658VT21', 'Lab', 25),
+('CS854H123', 'Lecture', 25),
+('CS854H123', 'Seminar', 20),
+('CS381VT24', 'Lecture', 25),
+('CS381VT24', 'Lab', 20),
+('CS381VT24', 'Course administration', 35),
+('CS754P120', 'Course administration', 40),
+('CS754P120', 'Project supervision', 50),
+('CS754P120', 'Tutorial', 40),
+('CS854HT23', 'Tutorial', 40),
+('CS854HT23', 'Lecture', 60),
+
+-- *** NEW: 2025 Period 1 planned activities ***
+('CS338P125', 'Lecture', 35),
+('CS338P125', 'Lab', 25),
+('CS338P125', 'Tutorial', 20),
+('CS559P125', 'Lecture', 30),
+('CS559P125', 'Lab', 25),
+('CS559P125', 'Tutorial', 20),
+('CS818P125', 'Lecture', 30),
+('CS818P125', 'Lab', 20),
+('CS990P125', 'Lecture', 25),
+('CS990P125', 'Seminar', 15),
+('CS854P125', 'Lecture', 25),
+('CS854P125', 'Lab', 20),
+
+-- *** NEW: 2025 Period 2 planned activities ***
+('CS990P225', 'Lecture', 25),
+('CS990P225', 'Tutorial', 15),
+('CS818P225', 'Lecture', 30),
+('CS818P225', 'Lab', 20),
+('CS854P225', 'Lecture', 25),
+('CS854P225', 'Seminar', 20),
+('CS754P225', 'Lecture', 25),
+
+-- *** NEW: 2025 Period 3 planned activities ***
+('CS338P325', 'Lecture', 35),
+('CS338P325', 'Lab', 25),
+('CS381P325', 'Lecture', 25),
+('CS381P325', 'Tutorial', 20),
+('CS754P325', 'Lecture', 30),
+('CS754P325', 'Project supervision', 40),
+('CS990P325', 'Lecture', 25),
+
+-- *** NEW: 2025 Period 4 planned activities ***
+('CS559P425', 'Lecture', 30),
+('CS559P425', 'Lab', 25),
+('CS658P425', 'Lecture', 35),
+('CS658P425', 'Lab', 25),
+('CS754P425', 'Lecture', 30),
+('CS754P425', 'Tutorial', 20),
+('CS818P425', 'Lecture', 30),
+('CS818P425', 'Lab', 25),
+('CS990P425', 'Lecture', 25),
+('CS990P425', 'Seminar', 15),
+
+-- *** NEW: 2025 HT (Autumn Term) planned activities ***
+('CS338HT25', 'Lecture', 40),
+('CS338HT25', 'Lab', 30),
+('CS338HT25', 'Tutorial', 25),
+('CS381HT25', 'Lecture', 30),
+('CS381HT25', 'Lab', 25),
+('CS559HT25', 'Lecture', 35),
+('CS559HT25', 'Lab', 25),
+('CS658HT25', 'Lecture', 40),
+('CS658HT25', 'Lab', 30),
+
+-- *** NEW: 2025 VT (Spring Term) planned activities ***
+('CS754VT25', 'Lecture', 30),
+('CS754VT25', 'Project supervision', 50),
+('CS754VT25', 'Lab', 20),
+('CS818VT25', 'Lecture', 35),
+('CS818VT25', 'Lab', 25),
+('CS854VT25', 'Lecture', 25),
+('CS854VT25', 'Seminar', 20),
+('CS990VT25', 'Lecture', 25),
+('CS990VT25', 'Tutorial', 20);
+
+-- ========================================================================
+-- ACTUAL ALLOCATIONS (Hours allocated to specific employees)
+-- ========================================================================
+-- These represent the allocation stage: who is teaching what and for how many hours
+-- Sum of allocated hours for an activity may be less than planned hours (under-allocation)
+
+INSERT INTO actual_allocation (instance_id, employee_id, activity_name, allocated_hours) VALUES
 -- Historical courses (existing data)
 ('CS559P322', 26, 'Lecture', 20),
 ('CS559P322', 26, 'Lab', 15),

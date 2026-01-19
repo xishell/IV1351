@@ -14,8 +14,9 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- Drop existing tables (in reverse dependency order)
 DROP TABLE IF EXISTS teacher_period_limit CASCADE;
-DROP TABLE IF EXISTS employee_course_instance CASCADE;
+DROP TABLE IF EXISTS actual_allocation CASCADE;
 DROP TABLE IF EXISTS planned_activity CASCADE;
+DROP TABLE IF EXISTS employee_course_instance CASCADE;
 DROP TABLE IF EXISTS teaching_activity CASCADE;
 DROP TABLE IF EXISTS salary_history CASCADE;
 DROP TABLE IF EXISTS employee CASCADE;
@@ -202,24 +203,6 @@ CREATE TABLE teaching_activity (
     PRIMARY KEY (activity_name)
 );
 
--- Allocated hours for each teacher's activities in each course
-CREATE TABLE planned_activity (
-    instance_id VARCHAR(9) NOT NULL,
-    employee_id INT NOT NULL,
-    activity_name VARCHAR(50) NOT NULL,
-    allocated_hours INT NOT NULL CHECK (allocated_hours >= 0),
-    PRIMARY KEY (instance_id, employee_id, activity_name),
-    FOREIGN KEY (instance_id)
-        REFERENCES course_instance(instance_id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (employee_id)
-        REFERENCES employee(employee_id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (activity_name)
-        REFERENCES teaching_activity(activity_name)
-        ON DELETE CASCADE
-);
-
 -- Tracks which employees are assigned to which course instances
 CREATE TABLE employee_course_instance (
     instance_id VARCHAR(9) NOT NULL,
@@ -234,29 +217,72 @@ CREATE TABLE employee_course_instance (
 );
 
 -- ========================================================================
--- ADVANCED REFERENTIAL INTEGRITY: Composite FK Subset Constraint
+-- PLANNED VS ALLOCATED HOURS (per Piazza discussion)
 -- ========================================================================
--- This constraint enforces the business rule:
---   "Planned hours can only be created for teachers assigned to the course"
+-- 1. planned_activity: Total planned hours for each course instance + activity type
+--    Example: IV1351_2025 TUTORIAL needs 200 total hours
 --
--- Why both individual FKs AND composite FK are needed:
---   1. Individual FKs (instance_id, employee_id, activity_name) ensure
---      each component exists and form the composite primary key
---   2. Composite FK (instance_id, employee_id) ensures the COMBINATION
---      exists in employee_course_instance as a valid assignment
+-- 2. actual_allocation: Hours allocated to each specific employee
+--    Example: Niharika gets 50h, Leif gets 50h = 100h allocated
+--    Difference: 200 - 100 = 100 hours under-allocated
 --
--- This prevents orphaned planned_activity records where a teacher has
--- planned hours for a course they're not assigned to. It's a subset
--- constraint pattern: the (instance_id, employee_id) pair in
--- planned_activity must be a subset of pairs in employee_course_instance.
---
--- Example of what this PREVENTS:
---   employee_course_instance: (employee_id=1, instance_id=100)
---   planned_activity: (employee_id=1, instance_id=200, ...) <- BLOCKED!
---   Error: FK violation - employee 1 not assigned to instance 200
+-- 3. The multiplication factor from teaching_activity is applied to both
+--    planned_hours and allocated_hours when calculating workload
 -- ========================================================================
-ALTER TABLE planned_activity
-    ADD CONSTRAINT fk_planned_activity_assignment
+
+-- Total planned hours for each activity in each course instance
+-- This is the planning stage: how many hours of each activity are needed
+CREATE TABLE planned_activity (
+    instance_id VARCHAR(9) NOT NULL,
+    activity_name VARCHAR(50) NOT NULL,
+    planned_hours INT NOT NULL CHECK (planned_hours >= 0),
+    PRIMARY KEY (instance_id, activity_name),
+    FOREIGN KEY (instance_id)
+        REFERENCES course_instance(instance_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (activity_name)
+        REFERENCES teaching_activity(activity_name)
+        ON DELETE CASCADE
+);
+
+-- Hours allocated to specific employees for each activity
+-- This is the allocation stage: who is teaching what and for how many hours
+CREATE TABLE actual_allocation (
+    instance_id VARCHAR(9) NOT NULL,
+    activity_name VARCHAR(50) NOT NULL,
+    employee_id INT NOT NULL,
+    allocated_hours INT NOT NULL CHECK (allocated_hours >= 0),
+    PRIMARY KEY (instance_id, activity_name, employee_id),
+    FOREIGN KEY (instance_id)
+        REFERENCES course_instance(instance_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (activity_name)
+        REFERENCES teaching_activity(activity_name)
+        ON DELETE CASCADE,
+    FOREIGN KEY (employee_id)
+        REFERENCES employee(employee_id)
+        ON DELETE CASCADE
+);
+
+-- ========================================================================
+-- ADVANCED REFERENTIAL INTEGRITY: Composite FK Constraints
+-- ========================================================================
+-- These constraints ensure:
+-- 1. Planned activities reference valid course instances
+-- 2. Allocations can only be made for activities that are planned
+-- 3. Allocations can only be made for employees assigned to the course
+-- ========================================================================
+
+-- Ensure allocations are only for planned activities
+ALTER TABLE actual_allocation
+    ADD CONSTRAINT fk_actual_allocation_planned
+    FOREIGN KEY (instance_id, activity_name)
+    REFERENCES planned_activity(instance_id, activity_name)
+    ON DELETE CASCADE;
+
+-- Ensure allocations are only for employees assigned to the course
+ALTER TABLE actual_allocation
+    ADD CONSTRAINT fk_actual_allocation_assignment
     FOREIGN KEY (instance_id, employee_id)
     REFERENCES employee_course_instance(instance_id, employee_id)
     ON DELETE CASCADE;
@@ -303,10 +329,18 @@ CREATE INDEX idx_employee_personal_number
 -- Planned activity lookups (for Task 2 queries)
 CREATE INDEX idx_planned_activity_instance_id
     ON planned_activity(instance_id);
-CREATE INDEX idx_planned_activity_employee_id
-    ON planned_activity(employee_id);
 CREATE INDEX idx_planned_activity_activity_name
     ON planned_activity(activity_name);
+
+-- Actual allocation lookups (for Task 2 queries)
+CREATE INDEX idx_actual_allocation_instance_id
+    ON actual_allocation(instance_id);
+CREATE INDEX idx_actual_allocation_employee_id
+    ON actual_allocation(employee_id);
+CREATE INDEX idx_actual_allocation_activity_name
+    ON actual_allocation(activity_name);
+CREATE INDEX idx_actual_allocation_instance_activity
+    ON actual_allocation(instance_id, activity_name);
 
 -- Employee-course assignments
 CREATE INDEX idx_employee_course_instance_instance_id
@@ -454,6 +488,31 @@ FROM employee e
 JOIN person p ON e.personal_number = p.personal_number
 JOIN salary_history sh ON e.employee_id = sh.employee_id;
 
+-- View to compare planned vs allocated hours per course instance and activity
+-- Shows under/over-allocation status
+CREATE VIEW v_allocation_status AS
+SELECT
+    pa.instance_id,
+    ci.course_code,
+    pa.activity_name,
+    ta.factor,
+    pa.planned_hours,
+    COALESCE(alloc.total_allocated, 0) AS allocated_hours,
+    pa.planned_hours - COALESCE(alloc.total_allocated, 0) AS remaining_hours,
+    CASE
+        WHEN COALESCE(alloc.total_allocated, 0) < pa.planned_hours THEN 'Under-allocated'
+        WHEN COALESCE(alloc.total_allocated, 0) = pa.planned_hours THEN 'Fully allocated'
+        ELSE 'Over-allocated'
+    END AS allocation_status
+FROM planned_activity pa
+JOIN course_instance ci ON pa.instance_id = ci.instance_id
+JOIN teaching_activity ta ON pa.activity_name = ta.activity_name
+LEFT JOIN (
+    SELECT instance_id, activity_name, SUM(allocated_hours) AS total_allocated
+    FROM actual_allocation
+    GROUP BY instance_id, activity_name
+) alloc ON pa.instance_id = alloc.instance_id AND pa.activity_name = alloc.activity_name;
+
 
 -- ========================================================================
 -- COMMENTS ON TABLES
@@ -463,7 +522,10 @@ COMMENT ON TABLE course_layout IS 'Course definitions with versioning. Create ne
 COMMENT ON TABLE course_instance IS 'Specific offerings of courses in particular periods/years.';
 COMMENT ON TABLE salary_history IS 'Tracks salary changes over time for accurate historical cost calculations.';
 COMMENT ON TABLE teaching_activity IS 'Activity types (Lecture, Lab, etc.) with multiplication factors for workload calculation.';
-COMMENT ON TABLE planned_activity IS 'Allocated hours for each teacher for each activity in each course instance.';
+COMMENT ON TABLE planned_activity IS 'Total planned hours per activity type for each course instance (planning stage).';
+COMMENT ON TABLE actual_allocation IS 'Hours allocated to specific employees for each activity (allocation stage).';
 COMMENT ON TABLE teacher_period_limit IS 'Maximum courses per period (stored in DB per Task 1 requirement).';
-COMMENT ON COLUMN teaching_activity.factor IS 'Multiplication factor applied to allocated hours (e.g., 2.4 for Labs, 3.6 for Lectures).';
+COMMENT ON COLUMN teaching_activity.factor IS 'Multiplication factor applied to both planned_hours and allocated_hours (e.g., 2.4 for Labs, 3.6 for Lectures).';
+COMMENT ON COLUMN planned_activity.planned_hours IS 'Total hours needed for this activity in this course instance.';
+COMMENT ON COLUMN actual_allocation.allocated_hours IS 'Hours assigned to this specific employee for this activity.';
 COMMENT ON COLUMN salary_history.valid_to IS 'NULL indicates current/ongoing salary. Otherwise, last date this salary was valid.';
